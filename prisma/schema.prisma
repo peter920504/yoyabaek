@@ -1,14 +1,266 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
-  provider = "prisma-client"
+  provider = "prisma-client-js"
   output   = "../app/generated/prisma"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+// ========================================
+// User & Authentication Models
+// ========================================
+
+model User {
+  id            String        @id @default(cuid())
+  email         String        @unique
+  name          String?
+  image         String?
+  provider      AuthProvider  @default(GOOGLE)
+  providerId    String?
+  role          UserRole      @default(USER)
+
+  // Relations
+  bookmarks     Bookmark[]
+  feedbacks     Feedback[]
+  searchLogs    SearchLog[]
+  reviewedDrafts ContentDraft[] @relation("Reviewer")
+
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([email])
+  @@index([provider])
+  @@map("users")
+}
+
+enum AuthProvider {
+  GOOGLE
+  KAKAO
+  NAVER
+}
+
+enum UserRole {
+  USER
+  EDITOR
+  ADMIN
+  SUPER_ADMIN
+}
+
+// ========================================
+// Content Models
+// ========================================
+
+model Content {
+  id            String        @id @default(cuid())
+  slug          String        @unique
+  title         String
+  summary       String        // 한줄 요약 (50자 이내)
+  description   String        @db.Text // 쉬운 설명
+  calculation   String?       @db.Text // 어떻게 계산하나요? (선택)
+  examples      String?       @db.Text // 실제 예시
+  tips          String?       @db.Text // 알아두면 좋은 점
+
+  category      Category      @relation(fields: [categoryId], references: [id])
+  categoryId    String
+
+  tags          String[]      // 검색용 태그
+  status        ContentStatus @default(DRAFT)
+
+  viewCount     Int           @default(0)
+
+  // Relations
+  relatedContents RelatedContent[] @relation("MainContent")
+  relatedFrom     RelatedContent[] @relation("RelatedContent")
+  bookmarks     Bookmark[]
+  feedbacks     Feedback[]
+
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  publishedAt   DateTime?
+
+  @@index([slug])
+  @@index([categoryId])
+  @@index([status])
+  @@map("contents")
+}
+
+enum ContentStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+model Category {
+  id            String        @id @default(cuid())
+  slug          String        @unique
+  name          String
+  description   String?
+  icon          String?       // 아이콘 이름 또는 경로
+  order         Int           @default(0)
+
+  contents      Content[]
+
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([slug])
+  @@map("categories")
+}
+
+model RelatedContent {
+  id              String    @id @default(cuid())
+
+  mainContent     Content   @relation("MainContent", fields: [mainContentId], references: [id], onDelete: Cascade)
+  mainContentId   String
+
+  relatedContent  Content   @relation("RelatedContent", fields: [relatedContentId], references: [id], onDelete: Cascade)
+  relatedContentId String
+
+  order           Int       @default(0)
+
+  createdAt       DateTime  @default(now())
+
+  @@unique([mainContentId, relatedContentId])
+  @@index([mainContentId])
+  @@map("related_contents")
+}
+
+// ========================================
+// Content Automation Models
+// ========================================
+
+model ContentDraft {
+  id            String        @id @default(cuid())
+  term          String        // 용어 이름
+  slug          String        @unique
+
+  // Claude API로 생성된 초안
+  generatedData Json          // 전체 생성 데이터
+
+  // 검토 상태
+  status        DraftStatus   @default(PENDING)
+  reviewer      User?         @relation("Reviewer", fields: [reviewerId], references: [id])
+  reviewerId    String?
+  reviewNotes   String?       @db.Text
+
+  // 메타데이터
+  apiModel      String?       // 사용한 Claude 모델
+  tokenUsed     Int?          // 사용한 토큰 수
+
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  reviewedAt    DateTime?
+
+  @@index([status])
+  @@index([slug])
+  @@map("content_drafts")
+}
+
+enum DraftStatus {
+  PENDING       // 검토 대기
+  APPROVED      // 승인됨
+  REJECTED      // 거절됨
+  PUBLISHED     // 발행 완료
+}
+
+// ========================================
+// User Interaction Models
+// ========================================
+
+model Bookmark {
+  id            String    @id @default(cuid())
+
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId        String
+
+  content       Content   @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  contentId     String
+
+  createdAt     DateTime  @default(now())
+
+  @@unique([userId, contentId])
+  @@index([userId])
+  @@map("bookmarks")
+}
+
+model Feedback {
+  id            String        @id @default(cuid())
+
+  user          User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId        String?
+
+  content       Content       @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  contentId     String
+
+  type          FeedbackType
+  message       String        @db.Text
+  status        FeedbackStatus @default(PENDING)
+
+  adminNotes    String?       @db.Text
+
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  resolvedAt    DateTime?
+
+  @@index([contentId])
+  @@index([status])
+  @@map("feedbacks")
+}
+
+enum FeedbackType {
+  ERROR         // 오류 제보
+  SUGGESTION    // 개선 제안
+  QUESTION      // 질문
+  OTHER         // 기타
+}
+
+enum FeedbackStatus {
+  PENDING       // 처리 대기
+  IN_PROGRESS   // 처리 중
+  RESOLVED      // 해결됨
+  REJECTED      // 거절됨
+}
+
+// ========================================
+// Analytics Models
+// ========================================
+
+model SearchLog {
+  id            String    @id @default(cuid())
+
+  user          User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId        String?
+
+  query         String
+  hasResults    Boolean
+  resultCount   Int       @default(0)
+
+  ipAddress     String?
+  userAgent     String?
+
+  createdAt     DateTime  @default(now())
+
+  @@index([query])
+  @@index([createdAt])
+  @@map("search_logs")
+}
+
+model PageView {
+  id            String    @id @default(cuid())
+
+  path          String
+  referrer      String?
+
+  ipAddress     String?
+  userAgent     String?
+
+  createdAt     DateTime  @default(now())
+
+  @@index([path])
+  @@index([createdAt])
+  @@map("page_views")
 }
